@@ -26,7 +26,6 @@ exports.shortenUrl = async (req, res) => {
       : null;
 
     const url = await Url.create({ originalUrl, shortCode, alias: alias || null, expiresAt });
-
     await redis.setex(`url:${shortCode}`, CACHE_TTL, originalUrl);
 
     res.status(201).json({
@@ -42,24 +41,23 @@ exports.shortenUrl = async (req, res) => {
 
 exports.redirectUrl = async (req, res) => {
   const { code } = req.params;
+  const ip = req.headers["x-forwarded-for"] || req.ip;
 
   try {
     const cached = await redis.get(`url:${code}`);
     if (cached) {
-      // Queue click tracking asynchronously
-      await analyticsQueue.add({ shortCode: code });
+      await analyticsQueue.add({ shortCode: code, ip });
       return res.redirect(cached);
     }
 
     const url = await Url.findOne({ shortCode: code });
-
     if (!url) return res.status(404).json({ error: "URL not found" });
 
     if (url.expiresAt && url.expiresAt < new Date()) {
       return res.status(410).json({ error: "URL has expired" });
     }
 
-    await analyticsQueue.add({ shortCode: code });
+    await analyticsQueue.add({ shortCode: code, ip });
     await redis.setex(`url:${code}`, CACHE_TTL, url.originalUrl);
 
     res.redirect(url.originalUrl);
@@ -73,13 +71,13 @@ exports.getAnalytics = async (req, res) => {
 
   try {
     const url = await Url.findOne({ shortCode: code });
-
     if (!url) return res.status(404).json({ error: "URL not found" });
 
     res.json({
       shortCode: url.shortCode,
       originalUrl: url.originalUrl,
       clicks: url.clicks,
+      clickHistory: url.clickHistory.slice(-10),
       createdAt: url.createdAt,
       expiresAt: url.expiresAt,
       cached: !!(await redis.get(`url:${code}`)),

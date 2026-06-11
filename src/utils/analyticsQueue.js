@@ -1,16 +1,37 @@
 const Bull = require("bull");
+const axios = require("axios");
 const Url = require("../models/Url");
 
 const analyticsQueue = new Bull("analytics", {
   redis: { host: "localhost", port: 6379 },
 });
 
-// Process jobs
 analyticsQueue.process(async (job) => {
-  const { shortCode } = job.data;
+  const { shortCode, ip } = job.data;
+
+  let geo = {};
+  try {
+    if (ip && ip !== "127.0.0.1" && ip !== "::1") {
+      const { data } = await axios.get(`http://ip-api.com/json/${ip}`);
+      if (data.status === "success") {
+        geo = { country: data.country, city: data.city };
+      }
+    }
+  } catch (err) {
+    // geo lookup failed, continue without it
+  }
+
   await Url.findOneAndUpdate(
     { shortCode },
-    { $inc: { clicks: 1 } }
+    {
+      $inc: { clicks: 1 },
+      $push: {
+        clickHistory: {
+          timestamp: new Date(),
+          ...geo,
+        },
+      },
+    }
   );
 });
 
