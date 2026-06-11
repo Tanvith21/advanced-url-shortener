@@ -1,6 +1,10 @@
 const { nanoid } = require("nanoid");
 const validUrl = require("valid-url");
 const Url = require("../models/Url");
+const redis = require("../utils/redisClient");
+const analyticsQueue = require("../utils/analyticsQueue");
+
+const CACHE_TTL = 3600;
 
 exports.shortenUrl = async (req, res) => {
   const { originalUrl, alias, expiresInDays } = req.body;
@@ -23,6 +27,8 @@ exports.shortenUrl = async (req, res) => {
 
     const url = await Url.create({ originalUrl, shortCode, alias: alias || null, expiresAt });
 
+    await redis.setex(`url:${shortCode}`, CACHE_TTL, originalUrl);
+
     res.status(201).json({
       originalUrl,
       shortUrl: `${process.env.BASE_URL}/${shortCode}`,
@@ -38,6 +44,13 @@ exports.redirectUrl = async (req, res) => {
   const { code } = req.params;
 
   try {
+    const cached = await redis.get(`url:${code}`);
+    if (cached) {
+      // Queue click tracking asynchronously
+      await analyticsQueue.add({ shortCode: code });
+      return res.redirect(cached);
+    }
+
     const url = await Url.findOne({ shortCode: code });
 
     if (!url) return res.status(404).json({ error: "URL not found" });
@@ -46,8 +59,8 @@ exports.redirectUrl = async (req, res) => {
       return res.status(410).json({ error: "URL has expired" });
     }
 
-    url.clicks += 1;
-    await url.save();
+    await analyticsQueue.add({ shortCode: code });
+    await redis.setex(`url:${code}`, CACHE_TTL, url.originalUrl);
 
     res.redirect(url.originalUrl);
   } catch (err) {
@@ -69,6 +82,7 @@ exports.getAnalytics = async (req, res) => {
       clicks: url.clicks,
       createdAt: url.createdAt,
       expiresAt: url.expiresAt,
+      cached: !!(await redis.get(`url:${code}`)),
     });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
