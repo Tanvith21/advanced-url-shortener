@@ -2,9 +2,11 @@ const Bull = require("bull");
 const axios = require("axios");
 const Url = require("../models/Url");
 
-const analyticsQueue = new Bull("analytics", {
-  redis: { host: "localhost", port: 6379 },
-});
+const redisConfig = process.env.REDIS_URL
+  ? { url: process.env.REDIS_URL }
+  : { redis: { host: "localhost", port: 6379 } };
+
+const analyticsQueue = new Bull("analytics", redisConfig);
 
 analyticsQueue.process(async (job) => {
   const { shortCode, ip } = job.data;
@@ -17,20 +19,13 @@ analyticsQueue.process(async (job) => {
         geo = { country: data.country, city: data.city };
       }
     }
-  } catch (err) {
-    // geo lookup failed, continue without it
-  }
+  } catch (err) {}
 
   await Url.findOneAndUpdate(
     { shortCode },
     {
       $inc: { clicks: 1 },
-      $push: {
-        clickHistory: {
-          timestamp: new Date(),
-          ...geo,
-        },
-      },
+      $push: { clickHistory: { timestamp: new Date(), ...geo } },
     }
   );
 });
